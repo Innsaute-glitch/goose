@@ -662,7 +662,9 @@ fn is_image_only_user_message(msg: &Value) -> bool {
             .and_then(|c| c.as_array())
             .is_some_and(|arr| {
                 !arr.is_empty()
-                    && arr.iter().any(|item| item.get("type") == Some(&json!("image_url")))
+                    && arr
+                        .iter()
+                        .any(|item| item.get("type") == Some(&json!("image_url")))
                     && arr.iter().all(|item| {
                         matches!(
                             item.get("type").and_then(|t| t.as_str()),
