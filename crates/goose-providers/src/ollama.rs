@@ -488,8 +488,19 @@ impl Provider for OllamaProvider {
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
         let mut effective_model_config = model_config.clone();
-        if let Some(capabilities) = self.model_capabilities(&model_config.model_name).await {
-            effective_model_config.supports_vision = Some(capabilities.vision);
+
+        if !effective_model_config.modalities_explicit {
+            if let Some(capabilities) = self.model_capabilities(&model_config.model_name).await {
+                if capabilities.vision
+                    && !effective_model_config
+                        .input_modalities
+                        .contains(&crate::canonical::Modality::Image)
+                {
+                    effective_model_config
+                        .input_modalities
+                        .push(crate::canonical::Modality::Image);
+                }
+            }
         }
 
         let mut payload = create_request(

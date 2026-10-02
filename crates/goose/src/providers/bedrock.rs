@@ -1200,6 +1200,7 @@ mod tests {
                 reasoning: None,
                 input_modalities: vec![goose_providers::canonical::Modality::Text],
                 output_modalities: vec![goose_providers::canonical::Modality::Text],
+                modalities_explicit: false,
                 request_headers: None,
             },
         )

@@ -93,6 +93,8 @@ pub struct ModelConfig {
     pub input_modalities: Vec<Modality>,
     #[serde(default)]
     pub output_modalities: Vec<Modality>,
+    #[serde(default)]
+    pub modalities_explicit: bool,
     /// Per-request HTTP headers attached to outgoing provider calls.
     /// Never serialized into request bodies.
     #[serde(skip)]
@@ -123,9 +125,12 @@ impl<'de> Deserialize<'de> for ModelConfig {
             output_modalities: Option<Vec<Modality>>,
             #[serde(default)]
             supports_vision: Option<bool>,
+            #[serde(default)]
+            modalities_explicit: bool,
         }
 
         let raw = RawModelConfig::deserialize(deserializer)?;
+        let has_modality_fields = raw.input_modalities.is_some() || raw.output_modalities.is_some();
         let mut config = Self {
             model_name: raw.model_name,
             context_limit: None,
@@ -141,6 +146,13 @@ impl<'de> Deserialize<'de> for ModelConfig {
             output_modalities: raw
                 .output_modalities
                 .unwrap_or_else(|| vec![Modality::Text]),
+            // Legacy sessions (those without explicit modality lists) are treated as
+            // derived from canonical/legacy data, not an explicit user declaration.
+            modalities_explicit: if has_modality_fields {
+                raw.modalities_explicit
+            } else {
+                false
+            },
             request_headers: None,
         };
         config.normalize_effort_suffix();
@@ -161,6 +173,7 @@ impl ModelConfig {
             reasoning: None,
             input_modalities: vec![Modality::Text],
             output_modalities: vec![Modality::Text],
+            modalities_explicit: false,
             request_headers: None,
         };
         config.normalize_effort_suffix();
@@ -181,16 +194,13 @@ impl ModelConfig {
         })
     }
 
+    #[deprecated(note = "use input_modalities")]
     pub fn with_canonical_vision_support(mut self, provider_name: &str) -> Self {
-        if self.supports_vision.is_none() {
-            if let Some(canonical) = self.canonical_model(provider_name) {
-                self.supports_vision = Some(
-                    canonical
-                        .modalities
-                        .input
-                        .contains(&crate::canonical::Modality::Image),
-                );
-            }
+        if self.modalities_explicit {
+            return self;
+        }
+        if let Some(canonical) = self.canonical_model(provider_name) {
+            self.input_modalities = normalize_modalities(canonical.modalities.input.clone());
         }
         self
     }
@@ -209,8 +219,10 @@ impl ModelConfig {
             if self.reasoning.is_none() {
                 self.reasoning = canonical.reasoning;
             }
-            self.input_modalities = normalize_modalities(canonical.modalities.input);
-            self.output_modalities = normalize_modalities(canonical.modalities.output);
+            if !self.modalities_explicit {
+                self.input_modalities = normalize_modalities(canonical.modalities.input);
+                self.output_modalities = normalize_modalities(canonical.modalities.output);
+            }
         }
 
         self
@@ -304,6 +316,20 @@ impl ModelConfig {
     ) -> Self {
         self.input_modalities = normalize_modalities(input_modalities);
         self.output_modalities = normalize_modalities(output_modalities);
+        self
+    }
+
+    #[deprecated(note = "use input_modalities")]
+    pub fn supports_vision(&self) -> bool {
+        self.input_modalities.contains(&Modality::Image)
+    }
+
+    #[deprecated(note = "use input_modalities")]
+    pub fn with_vision_support(mut self, supports_vision: bool) -> Self {
+        self.input_modalities.retain(|m| *m != Modality::Image);
+        if supports_vision && !self.input_modalities.contains(&Modality::Image) {
+            self.input_modalities.push(Modality::Image);
+        }
         self
     }
 
@@ -873,6 +899,40 @@ mod tests {
                 normalize_modalities(vec![Modality::Image]),
                 vec![Modality::Image]
             );
+        }
+
+        #[test]
+        fn modalities_explicit_round_trips() {
+            let config = ModelConfig::new("gpt-4o");
+            assert!(!config.modalities_explicit);
+
+            let mut config = ModelConfig::new("gpt-4o");
+            config.modalities_explicit = true;
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert_eq!(serialized["modalities_explicit"], serde_json::json!(true));
+
+            let deserialized: ModelConfig = serde_json::from_value(serialized).unwrap();
+            assert!(deserialized.modalities_explicit);
+        }
+
+        #[test]
+        fn legacy_session_defaults_modalities_explicit_to_false() {
+            let config: ModelConfig = serde_json::from_str(
+                r#"{"model_name":"gpt-4o","toolshim":false,"supports_vision":true}"#,
+            )
+            .unwrap();
+            assert!(!config.modalities_explicit);
+        }
+
+        #[test]
+        #[allow(deprecated)]
+        fn explicit_text_survives_canonical_vision_support() {
+            let mut config = ModelConfig::new("gpt-4o");
+            config.input_modalities = vec![Modality::Text];
+            config.output_modalities = vec![Modality::Text];
+            config.modalities_explicit = true;
+            let config = config.with_canonical_vision_support("openai");
+            assert_eq!(config.input_modalities, vec![Modality::Text]);
         }
     }
 

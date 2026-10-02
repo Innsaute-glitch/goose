@@ -45,7 +45,7 @@ pub fn materialize_model_config(provider_name: &str, model: ModelConfig) -> Resu
 fn custom_model_modalities(
     provider_name: &str,
     model_name: &str,
-) -> Option<goose_providers::base::ModelModalities> {
+) -> Option<(goose_providers::base::ModelModalities, bool)> {
     let provider = crate::config::declarative_providers::load_provider(provider_name)
         .ok()
         .filter(|provider| provider.is_editable)?;
@@ -62,13 +62,22 @@ fn custom_model_modalities(
             })
         })
         .and_then(|model| model.modalities.clone())
+        .map(|modalities| (modalities, true))
 }
 
 fn resolve_modalities(
     provider_name: &str,
-    model_name: &str,
-    legacy_input_modalities: Vec<Modality>,
-) -> (Vec<Modality>, Vec<Modality>) {
+    model: &ModelConfig,
+) -> (Vec<Modality>, Vec<Modality>, bool) {
+    if model.modalities_explicit {
+        return (
+            model.input_modalities.clone(),
+            model.output_modalities.clone(),
+            true,
+        );
+    }
+
+    let model_name = &model.model_name;
     let canonical_provider = crate::config::declarative_providers::load_provider(provider_name)
         .ok()
         .filter(|provider| provider.is_editable)
@@ -80,42 +89,50 @@ fn resolve_modalities(
                 let (base, _effort) = strip_reasoning_effort_suffix(model_name)?;
                 goose_providers::canonical::maybe_get_canonical_model(&canonical_provider, &base)
             });
-    let custom = custom_model_modalities(provider_name, model_name);
+    let (custom, modalities_explicit) = custom_model_modalities(provider_name, model_name)
+        .unwrap_or((Default::default(), false));
 
     (
         normalize_modalities(
             custom
-                .as_ref()
-                .and_then(|modalities| modalities.input.clone())
+                .input
+                .clone()
                 .unwrap_or_else(|| {
                     canonical
                         .as_ref()
                         .map(|model| model.modalities.input.clone())
-                        .unwrap_or(legacy_input_modalities)
+                        .unwrap_or_else(|| model.input_modalities.clone())
                 }),
         ),
         normalize_modalities(
             custom
-                .and_then(|modalities| modalities.output)
+                .output
+                .clone()
                 .unwrap_or_else(|| {
                     canonical
                         .map(|model| model.modalities.output)
-                        .unwrap_or_default()
+                        .unwrap_or_else(|| model.output_modalities.clone())
                 }),
         ),
+        modalities_explicit,
     )
 }
 
-fn apply_canonical_limits(provider_name: &str, model: ModelConfig) -> ModelConfig {
-    let model = if provider_name == goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME {
+fn apply_canonical_limits(provider_name: &str, mut model: ModelConfig) -> ModelConfig {
+    // Resolve modalities and the explicit flag before canonical limit writes,
+    // so with_canonical_limits knows whether user-provided modality declarations
+    // should be preserved.
+    let (input_modalities, output_modalities, modalities_explicit) =
+        resolve_modalities(provider_name, &model);
+    model.input_modalities = input_modalities;
+    model.output_modalities = output_modalities;
+    model.modalities_explicit = model.modalities_explicit || modalities_explicit;
+
+    if provider_name == goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME {
         model
     } else {
         model.with_canonical_limits(provider_name)
-    };
-    let legacy_input_modalities = model.input_modalities.clone();
-    let (input_modalities, output_modalities) =
-        resolve_modalities(provider_name, &model.model_name, legacy_input_modalities);
-    model.with_modalities(input_modalities, output_modalities)
+    }
 }
 
 fn materialize_model_config_inner(
@@ -205,6 +222,7 @@ fn base_model_config_from_user_config(
         reasoning: None,
         input_modalities: vec![Modality::Text],
         output_modalities: vec![Modality::Text],
+        modalities_explicit: false,
         request_headers: None,
     };
     if provider_name != goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME {
@@ -560,13 +578,49 @@ mod canonical_vision_tests {
     fn apply_canonical_limits_resolves_vision_support() {
         let model = apply_canonical_limits("alibaba-token-plan", ModelConfig::new("qwen3.8-flash"));
 
-        assert_eq!(model.supports_vision, Some(true));
+        assert!(model.supports_input_modality(Modality::Image));
     }
 
     #[test]
     fn apply_canonical_limits_leaves_unknown_providers_untouched() {
         let model = apply_canonical_limits("my-custom-provider", ModelConfig::new("some-model"));
 
-        assert_eq!(model.supports_vision, None);
+        assert!(!model.supports_input_modality(Modality::Image));
+    }
+
+    #[test]
+    fn explicit_text_survives_canonical_vision_write() {
+        let mut model = ModelConfig::new("gpt-4o");
+        model.input_modalities = vec![Modality::Text];
+        model.output_modalities = vec![Modality::Text];
+        model.modalities_explicit = true;
+
+        let model = apply_canonical_limits("openai", model);
+
+        assert_eq!(model.input_modalities, vec![Modality::Text]);
+        assert_eq!(model.output_modalities, vec![Modality::Text]);
+        assert!(!model.supports_input_modality(Modality::Image));
+    }
+
+    #[test]
+    fn default_config_resolves_canonical_vision() {
+        let model = apply_canonical_limits("openai", ModelConfig::new("gpt-4o"));
+
+        assert!(model.supports_input_modality(Modality::Image));
+    }
+
+    #[test]
+    fn simulated_ollama_detection_adds_image_when_not_explicit() {
+        let mut model = ModelConfig::new("qwen3.8-flash");
+        assert!(!model.modalities_explicit);
+
+        // Simulate the Ollama runtime detection branch.
+        if !model.modalities_explicit
+            && !model.input_modalities.contains(&Modality::Image)
+        {
+            model.input_modalities.push(Modality::Image);
+        }
+
+        assert!(model.supports_input_modality(Modality::Image));
     }
 }

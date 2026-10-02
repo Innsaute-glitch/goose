@@ -509,6 +509,7 @@ impl From<ModelInfo> for ProviderModelInfo {
 }
 
 impl ProviderModelConfig {
+    #[allow(deprecated)]
     fn to_goose_model_config(&self, provider_name: &str) -> Result<ModelConfig, GooseError> {
         let mut config = ModelConfig::new(&self.model_name)
             .with_canonical_vision_support(provider_name)
