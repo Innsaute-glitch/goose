@@ -490,15 +490,24 @@ impl Provider for OllamaProvider {
     ) -> Result<MessageStream, ProviderError> {
         let mut effective_model_config = model_config.clone();
         if let Some(capabilities) = self.model_capabilities(&model_config.model_name).await {
-            if capabilities.vision
-                && !effective_model_config.modalities_explicit
-                && !effective_model_config
-                    .input_modalities
-                    .contains(&Modality::Image)
-            {
-                effective_model_config
-                    .input_modalities
-                    .push(Modality::Image);
+            if !effective_model_config.modalities_explicit {
+                if capabilities.vision {
+                    if !effective_model_config
+                        .input_modalities
+                        .contains(&Modality::Image)
+                    {
+                        effective_model_config
+                            .input_modalities
+                            .push(Modality::Image);
+                    }
+                } else {
+                    effective_model_config
+                        .input_modalities
+                        .retain(|modality| *modality != Modality::Image);
+                    if effective_model_config.input_modalities.is_empty() {
+                        effective_model_config.input_modalities.push(Modality::Text);
+                    }
+                }
             }
         }
 
@@ -961,8 +970,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_does_not_remove_image_modality_when_vision_not_detected() {
+    async fn stream_removes_image_modality_when_vision_not_detected() {
         let server = mock_show_server(show_capabilities(&["completion"]), 1).await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut model_config = ModelConfig::new("custom-vision:latest");
+        model_config.input_modalities = vec![Modality::Text, Modality::Image];
+        let message = Message::user()
+            .with_text("What is in this image?")
+            .with_image("aW1hZ2VkYXRh", "image/png");
+        let provider = provider_for(&server);
+        let _stream = provider
+            .stream(&model_config, "system", &[message], &[])
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.url.path() == "/v1/chat/completions")
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(payload["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("[image omitted: model does not support vision]"));
+    }
+
+    #[tokio::test]
+    async fn stream_preserves_explicit_modalities_when_vision_not_detected() {
+        let server = mock_show_server(show_capabilities(&["completion"]), 1).await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut model_config = ModelConfig::new("custom-vision:latest");
+        model_config.modalities_explicit = true;
+        model_config.input_modalities = vec![Modality::Text, Modality::Image];
+        let message = Message::user()
+            .with_text("What is in this image?")
+            .with_image("aW1hZ2VkYXRh", "image/png");
+        let provider = provider_for(&server);
+        let _stream = provider
+            .stream(&model_config, "system", &[message], &[])
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.url.path() == "/v1/chat/completions")
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(payload["messages"][1]["content"][1]["type"], "image_url");
+    }
+
+    #[tokio::test]
+    async fn stream_ignores_missing_capability_data() {
+        let server = mock_show_server(ResponseTemplate::new(200).set_body_json(json!({})), 1).await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200))

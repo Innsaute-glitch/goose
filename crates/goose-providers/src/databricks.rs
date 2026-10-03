@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use crate::api_client::{ApiClient, AuthMethod, TlsConfig};
 use crate::base::{ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata};
 const DEFAULT_PROVIDER_TIMEOUT_SECS: u64 = 600;
+use crate::canonical::Modality;
 use crate::conversation::message::Message;
 use crate::databricks_auth::{
     DatabricksAuth, DatabricksAuthProvider, DatabricksOauthTokenProvider, DatabricksRefreshHook,
@@ -207,15 +208,24 @@ impl DatabricksProvider {
             return None;
         }
 
-        let upstream_has_image = ModelConfig::new(effective_model_name)
-            .with_canonical_vision_support(DATABRICKS_PROVIDER_NAME)
-            .supports_vision();
+        let canonical = crate::canonical::maybe_get_canonical_model(
+            DATABRICKS_PROVIDER_NAME,
+            effective_model_name,
+        )
+        .or_else(|| {
+            let (base_model, effort) = extract_reasoning_effort(effective_model_name);
+            effort.and_then(|_| {
+                crate::canonical::maybe_get_canonical_model(DATABRICKS_PROVIDER_NAME, &base_model)
+            })
+        })?;
 
-        if !upstream_has_image || model_config.supports_vision() {
+        let upstream_has_image = canonical.modalities.input.contains(&Modality::Image);
+
+        if model_config.supports_vision() == upstream_has_image {
             return None;
         }
 
-        Some(model_config.clone().with_vision_support(true))
+        Some(model_config.clone().with_vision_support(upstream_has_image))
     }
 
     fn uses_responses_api(
@@ -1081,9 +1091,19 @@ mod tests {
             .expect("upstream model should override alias-derived capability");
         assert!(corrected.supports_vision());
 
+        let downgraded = DatabricksProvider::resolve_vision_support(&resolved, "gpt-3.5-turbo")
+            .expect("a negative upstream result should remove image support");
+        assert!(!downgraded.supports_vision());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn resolve_vision_support_returns_none_when_upstream_model_not_in_catalog() {
+        let mut config = ModelConfig::new("production-chat");
+        config.input_modalities = vec![Modality::Text, Modality::Image];
+
         assert!(
-            DatabricksProvider::resolve_vision_support(&resolved, "gpt-3.5-turbo").is_none(),
-            "a negative upstream result must not remove canonical Image support"
+            DatabricksProvider::resolve_vision_support(&config, "not-a-catalog-model").is_none()
         );
     }
 
