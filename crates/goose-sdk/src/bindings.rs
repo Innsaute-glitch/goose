@@ -510,6 +510,9 @@ impl From<ModelInfo> for ProviderModelInfo {
 
 impl ProviderModelConfig {
     fn to_goose_model_config(&self, provider_name: &str) -> Result<ModelConfig, GooseError> {
+        // Keep using the deprecated vision compatibility accessor so the
+        // binding's behavior matches the legacy canonical-vision path.
+        #[allow(deprecated)]
         let mut config = ModelConfig::new(&self.model_name)
             .with_canonical_vision_support(provider_name)
             .with_temperature(self.temperature)
