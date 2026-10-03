@@ -112,10 +112,15 @@ fn apply_canonical_limits(provider_name: &str, model: ModelConfig) -> ModelConfi
     } else {
         model.with_canonical_limits(provider_name)
     };
+    let has_custom_modalities = custom_model_modalities(provider_name, &model.model_name).is_some();
     let legacy_input_modalities = model.input_modalities.clone();
     let (input_modalities, output_modalities) =
         resolve_modalities(provider_name, &model.model_name, legacy_input_modalities);
-    model.with_modalities(input_modalities, output_modalities)
+    let mut model = model.with_modalities(input_modalities, output_modalities);
+    if has_custom_modalities {
+        model.modalities_explicit = true;
+    }
+    model
 }
 
 fn materialize_model_config_inner(
@@ -330,6 +335,34 @@ mod modality_tests {
         })
         .unwrap()
         .name
+    }
+
+    #[test]
+    fn custom_modalities_are_marked_explicit() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([("GOOSE_PATH_ROOT", Some(root.as_str()))]);
+        let mut model = ModelInfo::new("gpt-4o");
+        model.modalities = Some(ModelModalities {
+            input: Some(vec![Modality::Text]),
+            output: Some(vec![Modality::Text]),
+        });
+        let provider = create_provider(model);
+
+        let config = materialize_model_config(&provider, ModelConfig::new("gpt-4o")).unwrap();
+        assert!(config.modalities_explicit);
+        assert_eq!(config.input_modalities, vec![Modality::Text]);
+    }
+
+    #[test]
+    fn absent_custom_modalities_are_not_marked_explicit() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([("GOOSE_PATH_ROOT", Some(root.as_str()))]);
+        let provider = create_provider(ModelInfo::new("gpt-4o"));
+
+        let config = materialize_model_config(&provider, ModelConfig::new("gpt-4o")).unwrap();
+        assert!(!config.modalities_explicit);
     }
 
     #[test]
@@ -561,13 +594,13 @@ mod canonical_vision_tests {
     fn apply_canonical_limits_resolves_vision_support() {
         let model = apply_canonical_limits("alibaba-token-plan", ModelConfig::new("qwen3.8-flash"));
 
-        assert_eq!(model.supports_vision, Some(true));
+        assert!(model.supports_input_modality(Modality::Image));
     }
 
     #[test]
     fn apply_canonical_limits_leaves_unknown_providers_untouched() {
         let model = apply_canonical_limits("my-custom-provider", ModelConfig::new("some-model"));
 
-        assert_eq!(model.supports_vision, None);
+        assert!(!model.supports_input_modality(Modality::Image));
     }
 }
