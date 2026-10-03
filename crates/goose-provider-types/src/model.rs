@@ -187,17 +187,25 @@ impl ModelConfig {
         })
     }
 
+    #[deprecated(note = "use input_modalities")]
     pub fn with_canonical_vision_support(mut self, provider_name: &str) -> Self {
-        if self.supports_vision.is_none() {
-            if let Some(canonical) = self.canonical_model(provider_name) {
-                self.supports_vision = Some(
-                    canonical
-                        .modalities
-                        .input
-                        .contains(&crate::canonical::Modality::Image),
-                );
-            }
+        if self.modalities_explicit {
+            return self;
         }
+
+        if let Some(canonical) = self.canonical_model(provider_name) {
+            let canonical_input = normalize_modalities(canonical.modalities.input);
+            let has_image = canonical_input.contains(&Modality::Image);
+            let already_image = self.input_modalities.contains(&Modality::Image);
+            if has_image && !already_image {
+                self.input_modalities.push(Modality::Image);
+            } else if !has_image && already_image {
+                self.input_modalities.retain(|m| *m != Modality::Image);
+            }
+            let input = std::mem::take(&mut self.input_modalities);
+            self.input_modalities = normalize_modalities(input);
+        }
+
         self
     }
 
@@ -215,8 +223,10 @@ impl ModelConfig {
             if self.reasoning.is_none() {
                 self.reasoning = canonical.reasoning;
             }
-            self.input_modalities = normalize_modalities(canonical.modalities.input);
-            self.output_modalities = normalize_modalities(canonical.modalities.output);
+            if !self.modalities_explicit {
+                self.input_modalities = normalize_modalities(canonical.modalities.input);
+                self.output_modalities = normalize_modalities(canonical.modalities.output);
+            }
         }
 
         self
@@ -311,6 +321,25 @@ impl ModelConfig {
         self.input_modalities = normalize_modalities(input_modalities);
         self.output_modalities = normalize_modalities(output_modalities);
         self
+    }
+
+    #[deprecated(note = "use input_modalities")]
+    pub fn with_vision_support(mut self, supports_vision: bool) -> Self {
+        if self.modalities_explicit {
+            return self;
+        }
+        let has_image = self.input_modalities.contains(&Modality::Image);
+        if supports_vision && !has_image {
+            self.input_modalities.push(Modality::Image);
+        } else if !supports_vision && has_image {
+            self.input_modalities.retain(|m| *m != Modality::Image);
+        }
+        self
+    }
+
+    #[deprecated(note = "use input_modalities")]
+    pub fn supports_vision(&self) -> bool {
+        self.input_modalities.contains(&Modality::Image)
     }
 
     pub fn supports_input_modality(&self, modality: Modality) -> bool {
