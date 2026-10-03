@@ -205,6 +205,7 @@ fn base_model_config_from_user_config(
         reasoning: None,
         input_modalities: vec![Modality::Text],
         output_modalities: vec![Modality::Text],
+        modalities_explicit: false,
         request_headers: None,
     };
     if provider_name != goose_providers::azure_foundry::AZURE_FOUNDRY_PROVIDER_NAME {

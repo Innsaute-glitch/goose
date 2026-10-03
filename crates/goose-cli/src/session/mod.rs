@@ -2940,6 +2940,7 @@ mod tests {
                 goose_providers::canonical::Modality::Image,
             ],
             output_modalities: vec![goose_providers::canonical::Modality::Text],
+            modalities_explicit: false,
             request_headers: None,
         };
 

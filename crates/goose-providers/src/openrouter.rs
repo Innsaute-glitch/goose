@@ -611,6 +611,7 @@ mod tests {
             reasoning: None,
             input_modalities: vec![crate::canonical::Modality::Text],
             output_modalities: vec![crate::canonical::Modality::Text],
+            modalities_explicit: false,
             request_headers: None,
         }
     }

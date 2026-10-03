@@ -93,6 +93,8 @@ pub struct ModelConfig {
     pub input_modalities: Vec<Modality>,
     #[serde(default)]
     pub output_modalities: Vec<Modality>,
+    #[serde(default)]
+    pub modalities_explicit: bool,
     /// Per-request HTTP headers attached to outgoing provider calls.
     /// Never serialized into request bodies.
     #[serde(skip)]
@@ -122,6 +124,8 @@ impl<'de> Deserialize<'de> for ModelConfig {
             #[serde(default)]
             output_modalities: Option<Vec<Modality>>,
             #[serde(default)]
+            modalities_explicit: bool,
+            #[serde(default)]
             supports_vision: Option<bool>,
         }
 
@@ -141,6 +145,7 @@ impl<'de> Deserialize<'de> for ModelConfig {
             output_modalities: raw
                 .output_modalities
                 .unwrap_or_else(|| vec![Modality::Text]),
+            modalities_explicit: raw.modalities_explicit,
             request_headers: None,
         };
         config.normalize_effort_suffix();
@@ -161,6 +166,7 @@ impl ModelConfig {
             reasoning: None,
             input_modalities: vec![Modality::Text],
             output_modalities: vec![Modality::Text],
+            modalities_explicit: false,
             request_headers: None,
         };
         config.normalize_effort_suffix();
